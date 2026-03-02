@@ -1,28 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:rinf/rinf.dart';
-import 'package:window_manager/window_manager.dart';
 import 'src/bindings/bindings.dart';
 import 'src/pages/home_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await windowManager.ensureInitialized();
-
-  const windowOptions = WindowOptions(
-    size: Size(1000, 660),
-    minimumSize: Size(720, 480),
-    center: true,
-    title: 'ZTrans',
-    titleBarStyle: TitleBarStyle.hidden,
-    windowButtonVisibility: false,
-    backgroundColor: Colors.transparent,
-    skipTaskbar: false,
-  );
-  await windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.show();
-    await windowManager.focus();
-  });
-
   await initializeRust(assignRustSignal);
   runApp(const ZTransApp());
 }

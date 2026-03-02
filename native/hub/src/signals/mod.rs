@@ -7,6 +7,7 @@ pub struct TranslateRequest {
     pub text: String,
     pub source_lang: String,
     pub target_lang: String,
+    pub request_id: String,
 }
 
 /// Rust 返回翻译结果到 Dart
@@ -14,4 +15,5 @@ pub struct TranslateRequest {
 pub struct TranslateResponse {
     pub translated_text: String,
     pub error: String,
+    pub request_id: String,
 }

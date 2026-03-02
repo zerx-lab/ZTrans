@@ -15,6 +15,7 @@ pub async fn listen_translate_requests(client: Client) {
                     TranslateResponse {
                         translated_text: translated,
                         error: String::new(),
+                        request_id: req.request_id,
                     }
                     .send_signal_to_dart();
                 }
@@ -22,6 +23,7 @@ pub async fn listen_translate_requests(client: Client) {
                     TranslateResponse {
                         translated_text: String::new(),
                         error: e.to_string(),
+                        request_id: req.request_id,
                     }
                     .send_signal_to_dart();
                 }
