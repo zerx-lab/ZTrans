@@ -200,6 +200,8 @@ class _HomePageState extends State<HomePage> {
             Expanded(child: _buildInputArea(colors)),
             Container(height: 1, color: colors.outlineVariant),
             Expanded(child: _buildResultArea(colors)),
+            Container(height: 1, color: colors.outlineVariant),
+            _buildStatusBar(colors),
           ],
         ),
       ),
@@ -300,6 +302,34 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildStatusBar(ColorScheme colors) {
+    return ListenableBuilder(
+      listenable: widget.settings,
+      builder: (context, _) {
+        final isGoogle =
+            widget.settings.backend == TranslatorBackend.google;
+        return Container(
+          height: 26,
+          color: colors.surfaceContainer,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Row(
+            children: [
+              const Spacer(),
+              _BackendSegment(
+                isGoogle: isGoogle,
+                onSelect: (backend) {
+                  widget.settings.setBackend(backend);
+                  if (_inputController.text.isNotEmpty) _translate();
+                },
+                colors: colors,
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -737,6 +767,96 @@ class _ThemeOption extends StatelessWidget {
               style: TextStyle(fontSize: 13, color: colors.onSurface),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── 后端分段控件 ────────────────────────────────────────────────────────────
+
+// ── 后端分段控件 ────────────────────────────────────────────────────────────
+
+class _BackendSegment extends StatelessWidget {
+  const _BackendSegment({
+    required this.isGoogle,
+    required this.onSelect,
+    required this.colors,
+  });
+
+  final bool isGoogle;
+  final void Function(TranslatorBackend) onSelect;
+  final ColorScheme colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 18,
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(5),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _Seg(
+            icon: Icons.translate_rounded,
+            tooltip: 'Google 翻译',
+            selected: isGoogle,
+            onTap: () => onSelect(TranslatorBackend.google),
+            colors: colors,
+          ),
+          _Seg(
+            icon: Icons.auto_awesome_rounded,
+            tooltip: 'OpenAI 兼容',
+            selected: !isGoogle,
+            onTap: () => onSelect(TranslatorBackend.openai),
+            colors: colors,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Seg extends StatelessWidget {
+  const _Seg({
+    required this.icon,
+    required this.tooltip,
+    required this.selected,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final bool selected;
+  final VoidCallback onTap;
+  final ColorScheme colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 500),
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          width: 22,
+          decoration: BoxDecoration(
+            color: selected ? colors.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(3),
+          ),
+          alignment: Alignment.center,
+          child: Icon(
+            icon,
+            size: 11,
+            color: selected
+                ? colors.onPrimary
+                : colors.onSurfaceVariant.withValues(alpha: 0.6),
+          ),
         ),
       ),
     );
