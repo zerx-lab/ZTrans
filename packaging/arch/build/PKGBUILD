@@ -1,0 +1,42 @@
+# Maintainer: Your Name <your@email.com>
+pkgname=ztrans
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Desktop translation application built with Flutter and Rust'
+arch=('x86_64')
+url='https://github.com/user/ztrans'
+license=('MIT')
+depends=('gtk3' 'openssl')
+options=('!strip')
+
+# This PKGBUILD packages a pre-built Flutter bundle.
+# Run build-arch.sh which builds the app first, then calls makepkg.
+
+package() {
+    cd "$srcdir"
+
+    # Install the Flutter bundle to /opt/ztrans
+    install -dm755 "$pkgdir/opt/ztrans"
+    cp -a bundle/* "$pkgdir/opt/ztrans/"
+
+    # Create wrapper script in /usr/bin
+    install -dm755 "$pkgdir/usr/bin"
+    cat > "$pkgdir/usr/bin/ztrans" << 'WRAPPER'
+#!/bin/bash
+exec /opt/ztrans/ztrans "$@"
+WRAPPER
+    chmod 755 "$pkgdir/usr/bin/ztrans"
+
+    # Install desktop entry
+    install -Dm644 ztrans.desktop "$pkgdir/usr/share/applications/ztrans.desktop"
+
+    # Install SVG icon (scalable)
+    install -Dm644 icons/ztrans.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/ztrans.svg"
+
+    # Install PNG icons at standard sizes
+    for size in 16 32 48 64 128 256 512; do
+        install -Dm644 "icons/ztrans-${size}.png" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ztrans.png"
+    done
+}

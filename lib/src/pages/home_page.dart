@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:rinf/rinf.dart';
 import '../bindings/bindings.dart';
+import '../settings/settings_provider.dart';
+import '../themes/app_themes.dart';
+import '../widgets/title_bar.dart';
 
 const _languages = [
   ('auto', '自动'),
@@ -18,7 +21,9 @@ const _languages = [
 ];
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, required this.settings});
+
+  final SettingsProvider settings;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -57,7 +62,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadInitialText() async {
     String text = '';
-    // 尝试读取 PRIMARY selection（鼠标选中的文本）
     try {
       final result =
           await Process.run('wl-paste', ['--primary', '--no-newline']);
@@ -65,7 +69,6 @@ class _HomePageState extends State<HomePage> {
         text = (result.stdout as String).trim();
       }
     } catch (_) {}
-    // 回退到 CLIPBOARD
     if (text.isEmpty) {
       try {
         final result = await Process.run('wl-paste', ['--no-newline']);
@@ -141,6 +144,13 @@ class _HomePageState extends State<HomePage> {
     _inputFocus.requestFocus();
   }
 
+  void _showSettings() {
+    showDialog(
+      context: context,
+      builder: (ctx) => _SettingsDialog(settings: widget.settings),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -155,13 +165,12 @@ class _HomePageState extends State<HomePage> {
         backgroundColor: colors.surfaceContainerLowest,
         body: Column(
           children: [
-            // 语言选择栏
+            TitleBar(onSettingsTap: _showSettings),
+            Container(height: 1, color: colors.outlineVariant),
             _buildLanguageBar(colors),
             Container(height: 1, color: colors.outlineVariant),
-            // 输入区域
             Expanded(child: _buildInputArea(colors)),
             Container(height: 1, color: colors.outlineVariant),
-            // 翻译结果区域
             Expanded(child: _buildResultArea(colors)),
           ],
         ),
@@ -322,6 +331,102 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+// ── 设置对话框 ──────────────────────────────────────────────────────────────
+
+class _SettingsDialog extends StatelessWidget {
+  const _SettingsDialog({required this.settings});
+
+  final SettingsProvider settings;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Dialog(
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: SizedBox(
+        width: 220,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 16, bottom: 8),
+                child: Text(
+                  '外观主题',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
+                ),
+              ),
+              ListenableBuilder(
+                listenable: settings,
+                builder: (context, _) => Column(
+                  children: AppThemeMode.values
+                      .map((mode) => _ThemeOption(mode: mode, settings: settings))
+                      .toList(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ThemeOption extends StatelessWidget {
+  const _ThemeOption({required this.mode, required this.settings});
+
+  final AppThemeMode mode;
+  final SettingsProvider settings;
+
+  String get _label {
+    switch (mode) {
+      case AppThemeMode.light:
+        return '浅色 (Light)';
+      case AppThemeMode.dark:
+        return '深色 (Dark)';
+      case AppThemeMode.oneDarkPro:
+        return 'One Dark Pro';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final isSelected = settings.themeMode == mode;
+    return InkWell(
+      onTap: () => settings.setTheme(mode),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Icon(
+              isSelected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              size: 18,
+              color: isSelected ? colors.primary : colors.onSurfaceVariant,
+            ),
+            const SizedBox(width: 12),
+            Text(
+              _label,
+              style: TextStyle(fontSize: 13, color: colors.onSurface),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── 语言下拉框 ─────────────────────────────────────────────────────────────
+
 class _LangDropdown extends StatelessWidget {
   const _LangDropdown({
     required this.value,
@@ -355,6 +460,8 @@ class _LangDropdown extends StatelessWidget {
     );
   }
 }
+
+// ── 复制按钮 ──────────────────────────────────────────────────────────────
 
 class _CopyButton extends StatefulWidget {
   const _CopyButton({required this.text});

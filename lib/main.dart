@@ -1,49 +1,56 @@
 import 'package:flutter/material.dart';
 import 'package:rinf/rinf.dart';
+import 'package:window_manager/window_manager.dart';
 import 'src/bindings/bindings.dart';
 import 'src/pages/home_page.dart';
+import 'src/settings/settings_provider.dart';
+import 'src/themes/app_themes.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+  const windowOptions = WindowOptions(
+    titleBarStyle: TitleBarStyle.hidden,
+    windowButtonVisibility: false,
+  );
+  await windowManager.waitUntilReadyToShow(windowOptions);
   await initializeRust(assignRustSignal);
-  runApp(const ZTransApp());
+  final settings = SettingsProvider();
+  await settings.load();
+  runApp(ZTransApp(settings: settings));
 }
 
-class ZTransApp extends StatelessWidget {
-  const ZTransApp({super.key});
+class ZTransApp extends StatefulWidget {
+  const ZTransApp({super.key, required this.settings});
+
+  final SettingsProvider settings;
+
+  @override
+  State<ZTransApp> createState() => _ZTransAppState();
+}
+
+class _ZTransAppState extends State<ZTransApp> {
+  @override
+  void initState() {
+    super.initState();
+    widget.settings.addListener(_onSettingsChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.settings.removeListener(_onSettingsChanged);
+    super.dispose();
+  }
+
+  void _onSettingsChanged() => setState(() {});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'ZTrans',
       debugShowCheckedModeBanner: false,
-      theme: _buildTheme(Brightness.light),
-      darkTheme: _buildTheme(Brightness.dark),
-      themeMode: ThemeMode.system,
-      home: const HomePage(),
-    );
-  }
-
-  ThemeData _buildTheme(Brightness brightness) {
-    final isDark = brightness == Brightness.dark;
-    return ThemeData(
-      useMaterial3: true,
-      brightness: brightness,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF4285F4),
-        brightness: brightness,
-      ),
-      fontFamily: 'sans-serif',
-      inputDecorationTheme: const InputDecorationTheme(
-        border: InputBorder.none,
-      ),
-      scrollbarTheme: ScrollbarThemeData(
-        thumbColor: WidgetStateProperty.all(
-          isDark
-              ? Colors.white.withValues(alpha: 0.2)
-              : Colors.black.withValues(alpha: 0.15),
-        ),
-      ),
+      theme: AppThemes.getTheme(widget.settings.themeMode),
+      home: HomePage(settings: widget.settings),
     );
   }
 }
