@@ -60,8 +60,10 @@ packaging/arch/    # Arch Linux PKGBUILD
 ## Arch Linux 打包
 
 ```bash
-cd packaging/arch
-makepkg -si
+# 依赖：flutter、makepkg（base-devel）、rsvg-convert（librsvg）
+bash packaging/build-arch.sh
+# 生成 packaging/arch/build/ztrans-*.pkg.tar.zst
+sudo pacman -U packaging/arch/build/ztrans-*.pkg.tar.zst
 ```
 
 ## 技术栈
