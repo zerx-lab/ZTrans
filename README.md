@@ -1,58 +1,75 @@
 # ztrans
 
-A new Flutter project.
+Linux 桌面翻译工具，紧凑弹窗模式，使用 Flutter + Rust（Rinf）构建。
 
-## Getting Started
+启动时自动读取剪贴板内容，失焦后退出，适合绑定快捷键快速调用。
 
-This project is a starting point for a Flutter application.
+## 功能
 
-A few resources to get you started if this is your first Flutter project:
+- **双翻译后端**：Google 翻译（免费）/ OpenAI 兼容接口（SSE 流式）
+- **自动读取剪贴板**：启动时优先获取 PRIMARY selection，回退到 CLIPBOARD
+- **流式输出**：OpenAI 后端逐 token 实时显示翻译结果
+- **思考模式**：支持开启 OpenAI reasoning（如 deepseek-reasoner）
+- **多主题**：Light / Dark / One Dark Pro
+- **输入防抖**：600ms 自动触发，`Ctrl+Enter` 立即翻译
+- **轻量窗口**：640×300 无边框置顶，不占任务栏，失焦自动退出
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## 构建依赖
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+- [Flutter SDK](https://docs.flutter.dev/get-started/install)（含 Linux desktop 支持）
+- [Rust toolchain](https://www.rust-lang.org/tools/install)
+- [Rinf CLI](https://rinf.cunarist.org)
 
-## Using Rust Inside Flutter
-
-This project leverages Flutter for GUI and Rust for the backend logic,
-utilizing the capabilities of the
-[Rinf](https://pub.dev/packages/rinf) framework.
-
-To run and build this app, you need to have
-[Flutter SDK](https://docs.flutter.dev/get-started/install)
-and [Rust toolchain](https://www.rust-lang.org/tools/install)
-installed on your system.
-You can check that your system is ready with the commands below.
-Note that all the Flutter subcomponents should be installed.
-
-```shell
-rustc --version
-flutter doctor
-```
-
-You also need to have the CLI tool for Rinf ready.
-
-```shell
+```bash
 cargo install rinf_cli
+flutter doctor   # 确认 Linux desktop 工具链就绪
 ```
 
-Signals sent between Dart and Rust are implemented using signal attributes.
-If you've modified the signal structs, run the following command
-to generate the corresponding Dart classes:
+## 运行与构建
 
-```shell
+```bash
+flutter run -d linux          # 调试模式
+flutter build linux           # 发布构建，产物在 build/linux/x64/release/bundle/
+```
+
+## 修改 Rust 信号后
+
+编辑 `native/hub/src/signals/mod.rs` 后必须重新生成 Dart 绑定：
+
+```bash
 rinf gen
 ```
 
-Now you can run and build this app just like any other Flutter projects.
+## 项目结构
 
-```shell
-flutter run
+```
+lib/
+  src/
+    pages/         # UI 页面（home_page.dart）
+    settings/      # 设置状态（SettingsProvider）
+    themes/        # 主题定义
+    widgets/       # 自定义组件（TitleBar 等）
+    bindings/      # 自动生成，勿手动编辑
+native/hub/
+  src/
+    actors/        # Rust Actor（translator.rs）
+    signals/       # Rinf 信号定义（mod.rs）
+packaging/arch/    # Arch Linux PKGBUILD
 ```
 
-For detailed instructions on writing Rust and Flutter together,
-please refer to Rinf's [documentation](https://rinf.cunarist.org).
+## Arch Linux 打包
+
+```bash
+cd packaging/arch
+makepkg -si
+```
+
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| UI | Flutter / Dart |
+| 后端 | Rust + tokio（current_thread） |
+| IPC | [Rinf](https://rinf.cunarist.org)（bincode 序列化） |
+| 状态管理 | ChangeNotifier + SharedPreferences |
+| 翻译 | Google Translate（免费）/ OpenAI 兼容 SSE |
