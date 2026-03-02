@@ -39,6 +39,7 @@ class _HomePageState extends State<HomePage> {
   String _targetLang = 'zh-CN';
 
   StreamSubscription<RustSignalPack<TranslateResponse>>? _subscription;
+  StreamSubscription<RustSignalPack<TranslateChunk>>? _chunkSubscription;
   Timer? _debounce;
   int _counter = 0;
   String _lastRequestId = '';
@@ -47,6 +48,7 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _subscription = TranslateResponse.rustSignalStream.listen(_onResponse);
+    _chunkSubscription = TranslateChunk.rustSignalStream.listen(_onChunk);
     _inputController.addListener(_onInputChanged);
     _loadInitialText();
   }
@@ -54,6 +56,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _subscription?.cancel();
+    _chunkSubscription?.cancel();
     _debounce?.cancel();
     _inputController.dispose();
     _inputFocus.dispose();
@@ -107,15 +110,23 @@ class _HomePageState extends State<HomePage> {
     if (text.isEmpty) return;
     _counter++;
     _lastRequestId = '$_counter';
+    final s = widget.settings;
     setState(() {
       _isLoading = true;
       _errorText = '';
+      _translatedText = '';
     });
     TranslateRequest(
       text: text,
       sourceLang: _sourceLang,
       targetLang: _targetLang,
       requestId: _lastRequestId,
+      backend: s.backend == TranslatorBackend.openai ? 'openai' : 'google',
+      openaiBaseUrl: s.openaiBaseUrl,
+      openaiApiKey: s.openaiApiKey,
+      openaiModel: s.openaiModel,
+      openaiThinking: s.openaiThinking,
+      openaiSystemPrompt: s.openaiSystemPrompt,
     ).sendSignalToRust();
   }
 
@@ -131,6 +142,23 @@ class _HomePageState extends State<HomePage> {
       } else {
         _translatedText = msg.translatedText;
         _errorText = '';
+      }
+    });
+  }
+
+  void _onChunk(RustSignalPack<TranslateChunk> pack) {
+    final msg = pack.message;
+    if (msg.requestId != _lastRequestId) return;
+    if (!mounted) return;
+    setState(() {
+      if (msg.error.isNotEmpty) {
+        _isLoading = false;
+        _errorText = msg.error;
+        _translatedText = '';
+      } else if (msg.isDone) {
+        _isLoading = false;
+      } else {
+        _translatedText += msg.chunkText;
       }
     });
   }
@@ -333,10 +361,39 @@ class _HomePageState extends State<HomePage> {
 
 // ── 设置对话框 ──────────────────────────────────────────────────────────────
 
-class _SettingsDialog extends StatelessWidget {
+class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog({required this.settings});
 
   final SettingsProvider settings;
+
+  @override
+  State<_SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<_SettingsDialog> {
+  late final TextEditingController _baseUrlCtrl;
+  late final TextEditingController _apiKeyCtrl;
+  late final TextEditingController _modelCtrl;
+  late final TextEditingController _systemPromptCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _baseUrlCtrl = TextEditingController(text: widget.settings.openaiBaseUrl);
+    _apiKeyCtrl = TextEditingController(text: widget.settings.openaiApiKey);
+    _modelCtrl = TextEditingController(text: widget.settings.openaiModel);
+    _systemPromptCtrl =
+        TextEditingController(text: widget.settings.openaiSystemPrompt);
+  }
+
+  @override
+  void dispose() {
+    _baseUrlCtrl.dispose();
+    _apiKeyCtrl.dispose();
+    _modelCtrl.dispose();
+    _systemPromptCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -345,39 +402,300 @@ class _SettingsDialog extends StatelessWidget {
       backgroundColor: colors.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: SizedBox(
-        width: 220,
-        child: Padding(
+        width: 340,
+        child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(left: 16, bottom: 8),
-                child: Text(
-                  '外观主题',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: colors.onSurface,
+          child: ListenableBuilder(
+            listenable: widget.settings,
+            builder: (context, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _sectionLabel(colors, '外观主题'),
+                ...AppThemeMode.values.map(
+                  (mode) =>
+                      _ThemeOption(mode: mode, settings: widget.settings),
+                ),
+                Divider(
+                  height: 24,
+                  indent: 16,
+                  endIndent: 16,
+                  color: colors.outlineVariant,
+                ),
+                _sectionLabel(colors, '翻译后端'),
+                _BackendOption(
+                  backend: TranslatorBackend.google,
+                  label: 'Google 翻译',
+                  settings: widget.settings,
+                ),
+                _BackendOption(
+                  backend: TranslatorBackend.openai,
+                  label: 'OpenAI 兼容',
+                  settings: widget.settings,
+                ),
+                if (widget.settings.backend == TranslatorBackend.openai)
+                  _OpenAISettings(
+                    settings: widget.settings,
+                    baseUrlCtrl: _baseUrlCtrl,
+                    apiKeyCtrl: _apiKeyCtrl,
+                    modelCtrl: _modelCtrl,
+                    systemPromptCtrl: _systemPromptCtrl,
                   ),
-                ),
-              ),
-              ListenableBuilder(
-                listenable: settings,
-                builder: (context, _) => Column(
-                  children: AppThemeMode.values
-                      .map((mode) => _ThemeOption(mode: mode, settings: settings))
-                      .toList(),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+
+  Widget _sectionLabel(ColorScheme colors, String title) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 16, bottom: 8),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: colors.onSurface,
+        ),
+      ),
+    );
+  }
 }
+
+class _BackendOption extends StatelessWidget {
+  const _BackendOption({
+    required this.backend,
+    required this.label,
+    required this.settings,
+  });
+
+  final TranslatorBackend backend;
+  final String label;
+  final SettingsProvider settings;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final isSelected = settings.backend == backend;
+    return InkWell(
+      onTap: () => settings.setBackend(backend),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Icon(
+              isSelected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              size: 18,
+              color: isSelected ? colors.primary : colors.onSurfaceVariant,
+            ),
+            const SizedBox(width: 12),
+            Text(label, style: TextStyle(fontSize: 13, color: colors.onSurface)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OpenAISettings extends StatelessWidget {
+  const _OpenAISettings({
+    required this.settings,
+    required this.baseUrlCtrl,
+    required this.apiKeyCtrl,
+    required this.modelCtrl,
+    required this.systemPromptCtrl,
+  });
+
+  final SettingsProvider settings;
+  final TextEditingController baseUrlCtrl;
+  final TextEditingController apiKeyCtrl;
+  final TextEditingController modelCtrl;
+  final TextEditingController systemPromptCtrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SettingField(
+            label: 'Base URL',
+            controller: baseUrlCtrl,
+            onChanged: settings.updateOpenaiBaseUrl,
+          ),
+          const SizedBox(height: 10),
+          _SettingField(
+            label: 'API Key',
+            controller: apiKeyCtrl,
+            obscure: true,
+            onChanged: settings.updateOpenaiApiKey,
+          ),
+          const SizedBox(height: 10),
+          _SettingField(
+            label: '模型名称',
+            controller: modelCtrl,
+            onChanged: settings.updateOpenaiModel,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Text(
+                '思考模式',
+                style: TextStyle(fontSize: 12, color: colors.onSurface),
+              ),
+              const Spacer(),
+              Switch(
+                value: settings.openaiThinking,
+                onChanged: settings.setOpenaiThinking,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _SystemPromptField(
+            controller: systemPromptCtrl,
+            onChanged: settings.updateOpenaiSystemPrompt,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingField extends StatelessWidget {
+  const _SettingField({
+    required this.label,
+    required this.controller,
+    required this.onChanged,
+    this.obscure = false,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final bool obscure;
+  final void Function(String) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+        ),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          obscureText: obscure,
+          onChanged: onChanged,
+          style: TextStyle(fontSize: 12, color: colors.onSurface),
+          decoration: InputDecoration(
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(color: colors.outlineVariant),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(color: colors.outlineVariant),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(color: colors.primary),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SystemPromptField extends StatelessWidget {
+  const _SystemPromptField({required this.controller, required this.onChanged});
+
+  final TextEditingController controller;
+  final void Function(String) onChanged;
+
+  static const _placeholder =
+      '留空则使用默认提示词：\n你是专业翻译助手。请将给定文本准确、自然地翻译成目标语言。只输出翻译结果，不附加解释或说明。';
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '系统提示词',
+              style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+            ),
+            const Spacer(),
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: controller,
+              builder: (context, value, _) {
+                if (value.text.isEmpty) return const SizedBox.shrink();
+                return GestureDetector(
+                  onTap: () {
+                    controller.clear();
+                    onChanged('');
+                  },
+                  child: Text(
+                    '恢复默认',
+                    style: TextStyle(fontSize: 11, color: colors.primary),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          onChanged: onChanged,
+          maxLines: 5,
+          minLines: 3,
+          style: TextStyle(fontSize: 12, color: colors.onSurface, height: 1.5),
+          decoration: InputDecoration(
+            hintText: _placeholder,
+            hintStyle: TextStyle(
+              fontSize: 11,
+              color: colors.onSurfaceVariant.withValues(alpha: 0.5),
+              height: 1.5,
+            ),
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(color: colors.outlineVariant),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(color: colors.outlineVariant),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(color: colors.primary),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── 主题选项 ──────────────────────────────────────────────────────────────
 
 class _ThemeOption extends StatelessWidget {
   const _ThemeOption({required this.mode, required this.settings});
