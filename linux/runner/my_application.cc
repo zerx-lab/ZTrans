@@ -41,13 +41,14 @@ static void my_application_activate(GApplication* application) {
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
   gtk_window_set_title(window, "ZTrans");
+  gtk_window_set_role(window, "ztrans-popup");
   gtk_window_set_default_size(window, 450, 680);
   gtk_window_set_resizable(window, FALSE);
   gtk_window_set_skip_taskbar_hint(window, TRUE);
   gtk_window_set_keep_above(window, TRUE);
-  gtk_window_set_position(window, GTK_WIN_POS_CENTER);
 
   // 用隐藏的 GTK HeaderBar 标记窗口为 CSD 模式，阻止 KDE/KWin 添加 server-side 装饰。
+  // 位置交给 compositor 侧脚本决定，避免和 Wayland 下的窗口摆放策略冲突。
   // gtk_window_set_decorated(FALSE) 在 KDE Wayland 上不可靠，
   // 而注册 titlebar 后 GTK 会告知 compositor 该窗口已自行处理装饰。
   GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());

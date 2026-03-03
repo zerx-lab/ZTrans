@@ -72,9 +72,13 @@ generate_icons() {
 # ── 准备 makepkg 源目录 ──────────────────────
 prepare_source() {
     local bundle_src="$PROJECT_ROOT/build/linux/x64/release/bundle"
+    local kwin_script_src="$PROJECT_ROOT/packaging/kde/kwin/ztrans_popup"
 
     if [[ ! -d "$bundle_src" ]]; then
         err "找不到构建产物: $bundle_src"
+    fi
+    if [[ ! -d "$kwin_script_src" ]]; then
+        err "找不到 KWin 脚本: $kwin_script_src"
     fi
 
     info "准备打包源文件..."
@@ -88,6 +92,10 @@ prepare_source() {
 
     # 复制 .desktop 文件
     cp "$ARCH_DIR/ztrans.desktop" "$BUILD_DIR/src/"
+
+    # 复制 KWin 脚本
+    mkdir -p "$BUILD_DIR/src/kwin"
+    cp -a "$kwin_script_src" "$BUILD_DIR/src/kwin/"
 
     # 复制 PKGBUILD
     cp "$ARCH_DIR/PKGBUILD" "$BUILD_DIR/"

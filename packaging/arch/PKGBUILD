@@ -30,6 +30,10 @@ WRAPPER
     # Install desktop entry
     install -Dm644 ztrans.desktop "$pkgdir/usr/share/applications/ztrans.desktop"
 
+    # Install the bundled KWin script system-wide.
+    install -dm755 "$pkgdir/usr/share/kwin/scripts"
+    cp -a kwin/ztrans_popup "$pkgdir/usr/share/kwin/scripts/"
+
     # Install SVG icon (scalable)
     install -Dm644 icons/ztrans.svg \
         "$pkgdir/usr/share/icons/hicolor/scalable/apps/ztrans.svg"

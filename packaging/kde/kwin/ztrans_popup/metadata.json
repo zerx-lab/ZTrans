@@ -1,0 +1,18 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Authors": [
+      {
+        "Email": "",
+        "Name": "ZTrans"
+      }
+    ],
+    "Description": "Anchor ZTrans below the mouse pointer on KDE Plasma 6 Wayland",
+    "Icon": "preferences-system-windows-script-test",
+    "Id": "ztrans_popup",
+    "License": "MIT",
+    "Name": "ZTrans Popup Anchor"
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}
