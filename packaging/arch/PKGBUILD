@@ -6,7 +6,7 @@ pkgdesc='Desktop translation application built with Flutter and Rust'
 arch=('x86_64')
 url='https://github.com/user/ztrans'
 license=('MIT')
-depends=('gtk3' 'openssl')
+depends=('gtk3' 'openssl' 'libayatana-appindicator')
 options=('!strip')
 
 # This PKGBUILD packages a pre-built Flutter bundle.

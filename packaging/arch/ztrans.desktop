@@ -7,3 +7,12 @@ Terminal=false
 Type=Application
 Categories=Utility;Translation;
 Keywords=translate;translation;
+Actions=TranslateClipboard;CaptureRegion;
+
+[Desktop Action TranslateClipboard]
+Name=翻译剪贴板内容
+Exec=ztrans --action translate-clipboard
+
+[Desktop Action CaptureRegion]
+Name=截取区域并翻译
+Exec=ztrans --action capture-region-translate

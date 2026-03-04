@@ -12,6 +12,7 @@ class SettingsProvider extends ChangeNotifier {
   static const _openaiModelKey = 'openai_model';
   static const _openaiThinkingKey = 'openai_thinking';
   static const _openaiSystemPromptKey = 'openai_system_prompt';
+  static const _ocrModelKey = 'ocr_model';
 
   AppThemeMode _themeMode = AppThemeMode.dark;
   TranslatorBackend _backend = TranslatorBackend.google;
@@ -20,6 +21,7 @@ class SettingsProvider extends ChangeNotifier {
   String _openaiModel = 'Qwen/Qwen3-8B';
   bool _openaiThinking = false;
   String _openaiSystemPrompt = '';
+  String _ocrModel = 'PaddlePaddle/PaddleOCR-VL';
 
   AppThemeMode get themeMode => _themeMode;
   TranslatorBackend get backend => _backend;
@@ -28,6 +30,7 @@ class SettingsProvider extends ChangeNotifier {
   String get openaiModel => _openaiModel;
   bool get openaiThinking => _openaiThinking;
   String get openaiSystemPrompt => _openaiSystemPrompt;
+  String get ocrModel => _ocrModel;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -51,6 +54,8 @@ class SettingsProvider extends ChangeNotifier {
     _openaiModel = prefs.getString(_openaiModelKey) ?? 'Qwen/Qwen3-8B';
     _openaiThinking = prefs.getBool(_openaiThinkingKey) ?? false;
     _openaiSystemPrompt = prefs.getString(_openaiSystemPromptKey) ?? '';
+    _ocrModel =
+        prefs.getString(_ocrModelKey) ?? 'PaddlePaddle/PaddleOCR-VL';
     notifyListeners();
   }
 
@@ -101,5 +106,11 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_openaiThinkingKey, enabled);
+  }
+
+  Future<void> updateOcrModel(String model) async {
+    _ocrModel = model;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_ocrModelKey, model);
   }
 }

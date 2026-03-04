@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 class TitleBar extends StatefulWidget {
@@ -54,8 +53,8 @@ class _TitleBarState extends State<TitleBar> {
             const SizedBox(width: 2),
             _TitleBarButton(
               icon: Icons.close,
-              tooltip: '关闭',
-              onTap: () => SystemNavigator.pop(),
+              tooltip: '隐藏到托盘',
+              onTap: () => windowManager.hide(),
               color: colors.onSurfaceVariant,
               hoverColor: colors.error,
             ),

@@ -10,22 +10,9 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
-  gboolean was_active;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
-
-// ── Focus → quit ─────────────────────────────────────────────────────────────
-
-static void on_focus_changed(GObject* obj, GParamSpec*, gpointer user_data) {
-  MyApplication* self = MY_APPLICATION(user_data);
-  gboolean active = gtk_window_is_active(GTK_WINDOW(obj));
-  if (active) {
-    self->was_active = TRUE;
-  } else if (self->was_active) {
-    g_application_quit(G_APPLICATION(self));
-  }
-}
 
 // ── First frame ──────────────────────────────────────────────────────────────
 
@@ -54,9 +41,6 @@ static void my_application_activate(GApplication* application) {
   GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
   gtk_header_bar_set_decoration_layout(header_bar, "");
   gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
-
-  g_signal_connect(window, "notify::is-active",
-                   G_CALLBACK(on_focus_changed), self);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(

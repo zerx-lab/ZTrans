@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, LogicalKeyboardKey;
 import 'package:rinf/rinf.dart';
+import 'package:window_manager/window_manager.dart';
+import '../../main.dart' show appCapturing;
 import '../bindings/bindings.dart';
 import '../settings/settings_provider.dart';
 import '../themes/app_themes.dart';
+import '../widgets/region_selector.dart';
 import '../widgets/title_bar.dart';
 
 const _languages = [
@@ -40,27 +44,173 @@ class _HomePageState extends State<HomePage> {
 
   StreamSubscription<RustSignalPack<TranslateResponse>>? _subscription;
   StreamSubscription<RustSignalPack<TranslateChunk>>? _chunkSubscription;
+  StreamSubscription<RustSignalPack<ShortcutTriggered>>? _shortcutSubscription;
+  StreamSubscription<RustSignalPack<ShortcutCaptureResult>>?
+      _captureSubscription;
+  StreamSubscription<RustSignalPack<ScreenCaptureReady>>?
+      _screenCaptureSubscription;
   Timer? _debounce;
   int _counter = 0;
   String _lastRequestId = '';
+  String _lastCaptureRequestId = '';
+
+  // 选区截图状态
+  Uint8List? _captureBytes;
+  bool _showRegionSelector = false;
 
   @override
   void initState() {
     super.initState();
     _subscription = TranslateResponse.rustSignalStream.listen(_onResponse);
     _chunkSubscription = TranslateChunk.rustSignalStream.listen(_onChunk);
+    _shortcutSubscription =
+        ShortcutTriggered.rustSignalStream.listen(_onShortcutTriggered);
+    _captureSubscription =
+        ShortcutCaptureResult.rustSignalStream.listen(_onCaptureResult);
+    _screenCaptureSubscription =
+        ScreenCaptureReady.rustSignalStream.listen(_onScreenCaptureReady);
     _inputController.addListener(_onInputChanged);
     _loadInitialText();
+    // 通知 Rust 所有 listener 已注册，可以发送 initial_action
+    AppReady().sendSignalToRust();
   }
 
   @override
   void dispose() {
     _subscription?.cancel();
     _chunkSubscription?.cancel();
+    _shortcutSubscription?.cancel();
+    _captureSubscription?.cancel();
+    _screenCaptureSubscription?.cancel();
     _debounce?.cancel();
     _inputController.dispose();
     _inputFocus.dispose();
     super.dispose();
+  }
+
+  Future<void> _onShortcutTriggered(
+      RustSignalPack<ShortcutTriggered> pack) async {
+    final action = pack.message.action;
+
+    if (action == 'translate-clipboard') {
+      await windowManager.show();
+      await windowManager.focus();
+    } else if (action == 'capture-region-translate') {
+      // 标记截图中，阻止 onWindowBlur 自动隐藏
+      appCapturing = true;
+      // 先隐藏窗口，避免出现在截图中
+      await windowManager.hide();
+      _lastCaptureRequestId = 'cap-${DateTime.now().millisecondsSinceEpoch}';
+      if (mounted) {
+        setState(() {
+          _isLoading = true;
+          _translatedText = '';
+          _errorText = '';
+        });
+      }
+      final s = widget.settings;
+      // Rust 截全屏后会发回 ScreenCaptureReady，再显示选区界面
+      CaptureAndTranslateRequest(
+        requestId: _lastCaptureRequestId,
+        ocrModel: s.ocrModel,
+        ocrBaseUrl: s.openaiBaseUrl,
+        ocrApiKey: s.openaiApiKey,
+      ).sendSignalToRust();
+    }
+  }
+
+  void _onCaptureResult(RustSignalPack<ShortcutCaptureResult> pack) {
+    final msg = pack.message;
+    if (msg.requestId != _lastCaptureRequestId) return;
+    if (!mounted) return;
+
+    // 截图流程结束，恢复正常失焦隐藏逻辑，然后显示窗口
+    appCapturing = false;
+    windowManager.show().then((_) => windowManager.focus());
+
+    // 用户取消选区时忽略错误，静默收尾
+    if (msg.error == '截图已取消') {
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    if (msg.error.isNotEmpty) {
+      setState(() {
+        _isLoading = false;
+        _errorText = msg.error;
+      });
+      return;
+    }
+
+    // 暂时移除 listener，避免 _onInputChanged 触发 debounce 与 _translate 竞争
+    _inputController.removeListener(_onInputChanged);
+    _inputController.value = TextEditingValue(
+      text: msg.text,
+      selection: TextSelection(baseOffset: 0, extentOffset: msg.text.length),
+    );
+    _inputController.addListener(_onInputChanged);
+
+    // 直接触发翻译，不经过 debounce
+    _translate();
+  }
+
+  /// Rust 全屏截图就绪 → 全屏显示选区界面
+  Future<void> _onScreenCaptureReady(
+      RustSignalPack<ScreenCaptureReady> pack) async {
+    final msg = pack.message;
+    if (msg.requestId != _lastCaptureRequestId) return;
+    if (!mounted) return;
+
+    if (msg.error.isNotEmpty) {
+      appCapturing = false;
+      setState(() {
+        _isLoading = false;
+        _errorText = msg.error;
+      });
+      await windowManager.show();
+      await windowManager.focus();
+      return;
+    }
+
+    // 全屏显示选区界面
+    await windowManager.show();
+    await windowManager.setFullScreen(true);
+    await windowManager.focus();
+
+    if (mounted) {
+      setState(() {
+        _captureBytes = Uint8List.fromList(msg.pngBytes);
+        _showRegionSelector = true;
+        _isLoading = false;
+      });
+    }
+  }
+
+  /// 用户框选完成 → 发送裁剪 PNG 给 Rust 做 OCR
+  Future<void> _onRegionSelected(Uint8List croppedPng) async {
+    setState(() {
+      _showRegionSelector = false;
+      _captureBytes = null;
+      _isLoading = true;
+    });
+    await windowManager.setFullScreen(false);
+
+    ScreenRegionSelected(
+      requestId: _lastCaptureRequestId,
+      pngBytes: croppedPng.toList(),
+    ).sendSignalToRust();
+  }
+
+  /// 用户取消截图选区
+  Future<void> _onCaptureCancelled() async {
+    setState(() {
+      _showRegionSelector = false;
+      _captureBytes = null;
+    });
+    await windowManager.setFullScreen(false);
+
+    // 告知 Rust 已取消；Rust 会回复 ShortcutCaptureResult(error="截图已取消")
+    ScreenCaptureCancelled(requestId: _lastCaptureRequestId).sendSignalToRust();
   }
 
   Future<void> _loadInitialText() async {
@@ -183,28 +333,41 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): () {
-          SystemNavigator.pop();
-        },
-      },
-      child: Scaffold(
-        backgroundColor: colors.surfaceContainerLowest,
-        body: Column(
-          children: [
-            TitleBar(onSettingsTap: _showSettings),
-            Container(height: 1, color: colors.outlineVariant),
-            _buildLanguageBar(colors),
-            Container(height: 1, color: colors.outlineVariant),
-            Expanded(child: _buildInputArea(colors)),
-            Container(height: 1, color: colors.outlineVariant),
-            Expanded(child: _buildResultArea(colors)),
-            Container(height: 1, color: colors.outlineVariant),
-            _buildStatusBar(colors),
-          ],
+    return Stack(
+      children: [
+        CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.escape): () {
+              windowManager.hide();
+            },
+          },
+          child: Scaffold(
+            backgroundColor: colors.surfaceContainerLowest,
+            body: Column(
+              children: [
+                TitleBar(onSettingsTap: _showSettings),
+                Container(height: 1, color: colors.outlineVariant),
+                _buildLanguageBar(colors),
+                Container(height: 1, color: colors.outlineVariant),
+                Expanded(child: _buildInputArea(colors)),
+                Container(height: 1, color: colors.outlineVariant),
+                Expanded(child: _buildResultArea(colors)),
+                Container(height: 1, color: colors.outlineVariant),
+                _buildStatusBar(colors),
+              ],
+            ),
+          ),
         ),
-      ),
+        // 截图选区覆盖层（全屏时显示）
+        if (_showRegionSelector && _captureBytes != null)
+          Positioned.fill(
+            child: RegionSelector(
+              pngBytes: _captureBytes!,
+              onSelected: _onRegionSelected,
+              onCancelled: _onCaptureCancelled,
+            ),
+          ),
+      ],
     );
   }
 
@@ -405,6 +568,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   late final TextEditingController _apiKeyCtrl;
   late final TextEditingController _modelCtrl;
   late final TextEditingController _systemPromptCtrl;
+  late final TextEditingController _ocrModelCtrl;
 
   @override
   void initState() {
@@ -414,6 +578,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     _modelCtrl = TextEditingController(text: widget.settings.openaiModel);
     _systemPromptCtrl =
         TextEditingController(text: widget.settings.openaiSystemPrompt);
+    _ocrModelCtrl = TextEditingController(text: widget.settings.ocrModel);
   }
 
   @override
@@ -422,6 +587,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     _apiKeyCtrl.dispose();
     _modelCtrl.dispose();
     _systemPromptCtrl.dispose();
+    _ocrModelCtrl.dispose();
     super.dispose();
   }
 
@@ -471,6 +637,42 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     modelCtrl: _modelCtrl,
                     systemPromptCtrl: _systemPromptCtrl,
                   ),
+                Divider(
+                  height: 24,
+                  indent: 16,
+                  endIndent: 16,
+                  color: colors.outlineVariant,
+                ),
+                _sectionLabel(colors, '截图 OCR'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'OCR 模型（使用上方同一 Base URL / API Key）',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      _SettingField(
+                        label: '模型名称',
+                        controller: _ocrModelCtrl,
+                        onChanged: widget.settings.updateOcrModel,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '快捷键在 KDE 系统设置 > 快捷键 > ZTrans 中配置',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.onSurfaceVariant.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
