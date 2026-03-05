@@ -68,10 +68,17 @@ pub struct CaptureAndTranslateRequest {
     pub ocr_api_key: String,
 }
 
-/// Rust → Dart：截图 OCR 识别结果（填入翻译框）
+/// Rust → Dart：截图 OCR 进度/结果信号
+/// - status: "capturing" | "ocr" | "done" | "error"
+///   capturing = 正在截图选区
+///   ocr       = 正在调用 OCR 识别
+///   done      = 识别完成（text 有值）
+///   error     = 出错（error 有值）
 #[derive(Serialize, RustSignal)]
 pub struct ShortcutCaptureResult {
     pub text: String,
     pub error: String,
     pub request_id: String,
+    /// 当前阶段: "capturing" | "ocr" | "done" | "error"
+    pub status: String,
 }

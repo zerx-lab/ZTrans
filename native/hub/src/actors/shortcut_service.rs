@@ -5,6 +5,7 @@ use base64::{Engine, engine::general_purpose};
 use futures_util::StreamExt;
 use reqwest::Client;
 use rinf::{DartSignal, RustSignal, debug_print};
+use std::time::Duration;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -272,12 +273,22 @@ async fn capture_full_screen_portal() -> Result<Vec<u8>, BoxError> {
 }
 
 async fn handle_capture(client: Client, req: CaptureAndTranslateRequest) {
+    // 阶段 1：通知 Dart 正在截图选区
+    ShortcutCaptureResult {
+        text: String::new(),
+        error: String::new(),
+        request_id: req.request_id.clone(),
+        status: "capturing".to_string(),
+    }
+    .send_signal_to_dart();
+
     let png_bytes = match capture_region_interactive().await {
         Err(e) => {
             ShortcutCaptureResult {
                 text: String::new(),
                 error: e.to_string(),
                 request_id: req.request_id,
+                status: "error".to_string(),
             }
             .send_signal_to_dart();
             return;
@@ -285,30 +296,80 @@ async fn handle_capture(client: Client, req: CaptureAndTranslateRequest) {
         Ok(bytes) => bytes,
     };
 
+    // 检查图片尺寸，部分 OCR 模型（如 Deepseek）要求宽高均 >= 28px
+    if let Err(e) = check_image_size(&png_bytes) {
+        ShortcutCaptureResult {
+            text: String::new(),
+            error: e.to_string(),
+            request_id: req.request_id,
+            status: "error".to_string(),
+        }
+        .send_signal_to_dart();
+        return;
+    }
+
+    // 阶段 2：通知 Dart 正在 OCR 识别
+    ShortcutCaptureResult {
+        text: String::new(),
+        error: String::new(),
+        request_id: req.request_id.clone(),
+        status: "ocr".to_string(),
+    }
+    .send_signal_to_dart();
+
     let base64_image = general_purpose::STANDARD.encode(&png_bytes);
-    let ocr_result = call_ocr_api(
-        &client,
-        &req.ocr_base_url,
-        &req.ocr_api_key,
-        &req.ocr_model,
-        &base64_image,
+
+    // OCR API 调用加 60 秒超时，防止永久挂起
+    let ocr_result = tokio::time::timeout(
+        Duration::from_secs(60),
+        call_ocr_api(
+            &client,
+            &req.ocr_base_url,
+            &req.ocr_api_key,
+            &req.ocr_model,
+            &base64_image,
+        ),
     )
     .await;
+
+    let ocr_result = match ocr_result {
+        Err(_) => Err(Box::<dyn std::error::Error + Send + Sync>::from(
+            "OCR 识别超时（超过 60 秒），请检查网络或 API 配置",
+        )),
+        Ok(inner) => inner,
+    };
 
     match ocr_result {
         Ok(text) => ShortcutCaptureResult {
             text,
             error: String::new(),
             request_id: req.request_id,
+            status: "done".to_string(),
         }
         .send_signal_to_dart(),
         Err(e) => ShortcutCaptureResult {
             text: String::new(),
             error: e.to_string(),
             request_id: req.request_id,
+            status: "error".to_string(),
         }
         .send_signal_to_dart(),
     }
+}
+
+/// 检查 PNG 图片的宽高是否满足最低要求（宽和高均需 >= 28px）
+fn check_image_size(png_bytes: &[u8]) -> Result<(), BoxError> {
+    use image::GenericImageView;
+
+    let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
+        .map_err(|e| -> BoxError { format!("无法解析截图：{e}").into() })?;
+    let (w, h) = img.dimensions();
+    if w < 28 || h < 28 {
+        return Err(
+            format!("截图区域太小（{w}×{h}px），请框选更大的区域（宽和高均需至少 28px）").into(),
+        );
+    }
+    Ok(())
 }
 
 /// 调用 OpenAI 兼容 vision API 进行 OCR
@@ -323,21 +384,23 @@ async fn call_ocr_api(
 
     let body = serde_json::json!({
         "model": model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": format!("data:image/png;base64,{}", base64_image)
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是OCR工具。将图片中人眼可见的文字原样输出，只输出纯文本，不输出任何标签、代码、标点装饰或链接语法。"
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:image/png;base64,{}", base64_image)
+                        }
                     }
-                },
-                {
-                    "type": "text",
-                    "text": "识别图片中所有文字，原样输出文字内容，不添加任何说明或格式。"
-                }
-            ]
-        }],
+                ]
+            }
+        ],
         "max_tokens": 2048
     });
 
@@ -355,9 +418,184 @@ async fn call_ocr_api(
         return Err(format!("OCR API 错误 {status}: {err_text}").into());
     }
 
+    /// 清洗 OCR 结果中残留的 HTML 标签和 Markdown 语法符号，返回纯文本。
+    ///
+    /// 处理顺序：
+    /// 1. 去除 HTML/XML 标签（块级标签转换为换行，其余直接删除）
+    /// 2. 去除 Markdown 行级装饰（标题 #、列表 -/*/+、分割线 ---、代码围栏 ```）
+    /// 3. 去除 Markdown 行内装饰（反引号、粗斜体 */_、[text](url) 链接只保留 label）
+    /// 4. 合并多余空行
+    fn strip_markup(text: &str) -> String {
+        // ── 第一步：去除 HTML 标签 ──────────────────────────────────────
+        let mut buf = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '<' {
+                buf.push(ch);
+                continue;
+            }
+            let mut tag = String::new();
+            let mut closed = false;
+            for inner in chars.by_ref() {
+                if inner == '>' {
+                    closed = true;
+                    break;
+                }
+                tag.push(inner);
+            }
+            if !closed {
+                buf.push('<');
+                buf.push_str(&tag);
+                continue;
+            }
+            let tag_name = tag
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            match tag_name.as_str() {
+                "p" | "br" | "div" | "tr" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+                | "blockquote" | "pre" | "hr" => {
+                    if !buf.ends_with('\n') {
+                        buf.push('\n');
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // ── 第二步：逐行处理 Markdown 行级语法 ─────────────────────────
+        let mut line_buf = String::with_capacity(buf.len());
+        for line in buf.lines() {
+            let t = line.trim();
+
+            // 跳过纯分割线（--- / *** / ===，至少 3 个相同字符）
+            if t.len() >= 3 && t.chars().all(|c| c == '-' || c == '*' || c == '=') {
+                continue;
+            }
+
+            // 跳过代码围栏行（``` 或 ~~~）
+            if t.starts_with("```") || t.starts_with("~~~") {
+                continue;
+            }
+
+            // 去掉行首 Markdown 标题 # 符号
+            let t = t.trim_start_matches('#').trim_start();
+
+            // 去掉行首无序列表符号（- / * / + 后跟空格）
+            let t = if (t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ "))
+                && t.len() > 2
+            {
+                t[2..].trim_start()
+            } else {
+                t
+            };
+
+            // 去掉行首有序列表符号（"1. " / "12. " 等）
+            let t = if let Some(pos) = t.find(". ") {
+                let prefix = &t[..pos];
+                if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
+                    t[pos + 2..].trim_start()
+                } else {
+                    t
+                }
+            } else {
+                t
+            };
+
+            if !t.is_empty() {
+                line_buf.push_str(t);
+                line_buf.push('\n');
+            } else {
+                line_buf.push('\n');
+            }
+        }
+
+        // ── 第三步：去除行内 Markdown 语法 ─────────────────────────────
+        // [label](url)  →  label
+        let mut inline = String::with_capacity(line_buf.len());
+        let mut chars = line_buf.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '[' {
+                // 收集 label
+                let mut label = String::new();
+                let mut found_bracket = false;
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        found_bracket = true;
+                        break;
+                    }
+                    label.push(c);
+                }
+                if found_bracket && chars.peek() == Some(&'(') {
+                    // 消费 (url)
+                    chars.next(); // '('
+                    let mut depth = 1u32;
+                    for c in chars.by_ref() {
+                        if c == '(' {
+                            depth += 1;
+                        }
+                        if c == ')' {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    inline.push_str(&label);
+                } else {
+                    // 不是链接语法，原样保留
+                    inline.push('[');
+                    inline.push_str(&label);
+                    if found_bracket {
+                        inline.push(']');
+                    }
+                }
+                continue;
+            }
+            inline.push(ch);
+        }
+
+        // 去掉行内反引号、粗斜体符号（` * _ ~~ ）
+        let mut cleaned = String::with_capacity(inline.len());
+        let mut chars = inline.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '`' => {}       // 直接丢弃
+                '*' | '_' => {} // 直接丢弃（粗/斜体）
+                '~' if chars.peek() == Some(&'~') => {
+                    chars.next(); // 丢弃第二个 ~（删除线）
+                }
+                _ => cleaned.push(ch),
+            }
+        }
+
+        // ── 第四步：合并多余空行（最多保留一个空行）───────────────────
+        let mut result = String::with_capacity(cleaned.len());
+        let mut blank_count = 0u32;
+        for line in cleaned.lines() {
+            if line.trim().is_empty() {
+                blank_count += 1;
+                if blank_count <= 1 {
+                    result.push('\n');
+                }
+            } else {
+                blank_count = 0;
+                result.push_str(line);
+                result.push('\n');
+            }
+        }
+
+        result.trim().to_string()
+    }
+
     let json: serde_json::Value = resp.json().await?;
-    json["choices"][0]["message"]["content"]
+    let raw = json["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| -> BoxError { "OCR 响应格式异常".into() })
-        .map(|s| s.trim().to_string())
+        .ok_or_else(|| -> BoxError { "OCR 响应格式异常".into() })?
+        .trim()
+        .to_string();
+
+    Ok(strip_markup(&raw))
 }

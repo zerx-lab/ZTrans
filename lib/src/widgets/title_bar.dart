@@ -2,9 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 class TitleBar extends StatefulWidget {
-  const TitleBar({super.key, required this.onSettingsTap});
+  const TitleBar({
+    super.key,
+    required this.onSettingsTap,
+    required this.pinned,
+    required this.onPinChanged,
+  });
 
   final VoidCallback onSettingsTap;
+  final bool pinned;
+  final ValueChanged<bool> onPinChanged;
 
   @override
   State<TitleBar> createState() => _TitleBarState();
@@ -44,6 +51,13 @@ class _TitleBarState extends State<TitleBar> {
               ),
             ),
             const Spacer(),
+            // ── Pin 按钮 ──────────────────────────────────────────────────
+            _PinButton(
+              pinned: widget.pinned,
+              onToggle: () => widget.onPinChanged(!widget.pinned),
+              colors: colors,
+            ),
+            const SizedBox(width: 2),
             _TitleBarButton(
               icon: Icons.settings_outlined,
               tooltip: '设置',
@@ -64,6 +78,74 @@ class _TitleBarState extends State<TitleBar> {
     );
   }
 }
+
+// ── Pin 按钮 ──────────────────────────────────────────────────────────────────
+
+class _PinButton extends StatefulWidget {
+  const _PinButton({
+    required this.pinned,
+    required this.onToggle,
+    required this.colors,
+  });
+
+  final bool pinned;
+  final VoidCallback onToggle;
+  final ColorScheme colors;
+
+  @override
+  State<_PinButton> createState() => _PinButtonState();
+}
+
+class _PinButtonState extends State<_PinButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPinned = widget.pinned;
+    final activeColor = widget.colors.primary;
+    final idleColor = widget.colors.onSurfaceVariant;
+
+    // 钉住时：图标用主题色，背景淡色高亮
+    // 悬浮时：淡色背景
+    final iconColor = isPinned ? activeColor : idleColor;
+    final bgColor = isPinned
+        ? activeColor.withValues(alpha: _hovered ? 0.22 : 0.13)
+        : _hovered
+            ? idleColor.withValues(alpha: 0.15)
+            : Colors.transparent;
+
+    return Tooltip(
+      message: isPinned ? '取消钉住（点击后失焦自动隐藏）' : '钉在桌面（失焦不隐藏）',
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          onTap: widget.onToggle,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 28,
+            height: 22,
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Transform.rotate(
+              // 未钉住时图标倾斜 45°，钉住时恢复竖直，给视觉反馈
+              angle: isPinned ? 0 : 0.785398, // 0 or π/4
+              child: Icon(
+                Icons.push_pin_rounded,
+                size: 14,
+                color: iconColor,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── 通用标题栏按钮 ──────────────────────────────────────────────────────────
 
 class _TitleBarButton extends StatefulWidget {
   const _TitleBarButton({

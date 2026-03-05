@@ -12,6 +12,9 @@ import 'src/themes/app_themes.dart';
 /// 截图进行中时置 true，阻止 onWindowBlur 隐藏窗口
 bool appCapturing = false;
 
+/// 钉在桌面时置 true，阻止 onWindowBlur 隐藏窗口
+bool appPinned = false;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
@@ -135,10 +138,11 @@ class _ZTransAppState extends State<ZTransApp>
     _lastShownAt = DateTime.now();
   }
 
-  /// 失焦隐藏到托盘；截图进行中或窗口刚显示（500ms 内）时跳过
+  /// 失焦隐藏到托盘；截图进行中、已钉住或窗口刚显示（500ms 内）时跳过
   @override
   void onWindowBlur() {
     if (appCapturing) return;
+    if (appPinned) return;
     // KDE Wayland 上焦点竞争：窗口刚出现时 blur 事件可能紧随 show 而来，忽略之
     if (DateTime.now().difference(_lastShownAt) < const Duration(milliseconds: 500)) return;
     windowManager.hide();
@@ -158,7 +162,10 @@ class _ZTransAppState extends State<ZTransApp>
       title: 'ZTrans',
       debugShowCheckedModeBanner: false,
       theme: AppThemes.getTheme(widget.settings.themeMode),
-      home: HomePage(settings: widget.settings),
+      home: HomePage(
+        settings: widget.settings,
+        onPinChanged: (pinned) => setState(() => appPinned = pinned),
+      ),
     );
   }
 }
