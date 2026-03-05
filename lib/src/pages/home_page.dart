@@ -78,7 +78,7 @@ class _HomePageState extends State<HomePage> {
     _captureSubscription =
         ShortcutCaptureResult.rustSignalStream.listen(_onCaptureResult);
     _inputController.addListener(_onInputChanged);
-    _loadInitialText();
+    // 启动时不自动加载剪贴板，仅注册信号监听；窗口由托盘/快捷键唤起时再填充文字
     // 通知 Rust 所有 listener 已注册，同时传递快捷键配置
     AppReady(
       useXdgShortcuts: widget.settings.useXdgShortcuts,
@@ -96,6 +96,39 @@ class _HomePageState extends State<HomePage> {
     _inputController.dispose();
     _inputFocus.dispose();
     super.dispose();
+  }
+
+  /// 窗口被唤起时（仅快捷键 translate-clipboard 触发），读取并填充文字
+  /// 普通托盘点击显示窗口时不自动翻译，保留上次内容
+  Future<void> _loadTextOnShow() async {
+    String text = '';
+    try {
+      final result =
+          await Process.run('wl-paste', ['--primary', '--no-newline']);
+      if (result.exitCode == 0) {
+        text = (result.stdout as String).trim();
+      }
+    } catch (_) {}
+    if (text.isEmpty) {
+      try {
+        final result = await Process.run('wl-paste', ['--no-newline']);
+        if (result.exitCode == 0) {
+          text = (result.stdout as String).trim();
+        }
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    if (text.isNotEmpty) {
+      _inputController.removeListener(_onInputChanged);
+      _inputController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection(baseOffset: 0, extentOffset: text.length),
+      );
+      _inputController.addListener(_onInputChanged);
+      _debounce?.cancel();
+      _debounce = Timer(const Duration(milliseconds: 300), _translate);
+    }
+    _inputFocus.requestFocus();
   }
 
   /// 启动 OCR 计时器，每秒更新已经过时间
@@ -117,7 +150,12 @@ class _HomePageState extends State<HomePage> {
       final clipboardText = pack.message.clipboardText.trim();
       await windowManager.show();
       await windowManager.focus();
-      await _applyTranslateText(selectedText, clipboardText);
+      // 若 Rust 端未能读取到文字（两者均为空），则回退到本地读取剪贴板
+      if (selectedText.isEmpty && clipboardText.isEmpty) {
+        await _loadTextOnShow();
+      } else {
+        await _applyTranslateText(selectedText, clipboardText);
+      }
     } else if (action == 'capture-region-translate') {
       // 标记截图中，阻止 onWindowBlur 自动隐藏
       appCapturing = true;
@@ -209,35 +247,6 @@ class _HomePageState extends State<HomePage> {
 
     // 直接触发翻译，不经过 debounce
     _translate();
-  }
-
-  Future<void> _loadInitialText() async {
-    String text = '';
-    try {
-      final result =
-          await Process.run('wl-paste', ['--primary', '--no-newline']);
-      if (result.exitCode == 0) {
-        text = (result.stdout as String).trim();
-      }
-    } catch (_) {}
-    if (text.isEmpty) {
-      try {
-        final result = await Process.run('wl-paste', ['--no-newline']);
-        if (result.exitCode == 0) {
-          text = (result.stdout as String).trim();
-        }
-      } catch (_) {}
-    }
-    if (!mounted) return;
-    if (text.isNotEmpty) {
-      _inputController.value = TextEditingValue(
-        text: text,
-        selection: TextSelection(baseOffset: 0, extentOffset: text.length),
-      );
-      _debounce?.cancel();
-      _debounce = Timer(const Duration(milliseconds: 300), _translate);
-    }
-    _inputFocus.requestFocus();
   }
 
   /// 快捷键触发时将文字填入输入框并翻译。

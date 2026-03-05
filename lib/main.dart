@@ -37,8 +37,8 @@ Future<void> main() async {
     windowButtonVisibility: false,
   );
   await windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.show();
-    await windowManager.focus();
+    // 启动时不显示窗口，仅驻留托盘；用户通过托盘或快捷键唤起
+    await windowManager.hide();
     await windowManager.setPreventClose(true);
   });
 
@@ -61,8 +61,7 @@ class _ZTransAppState extends State<ZTransApp>
 @override
   void initState() {
     super.initState();
-    // 启动保护：初始化时立刻记录 show 时刻，防止 Wayland 焦点竞争导致窗口刚出现就被 blur 隐藏
-    _lastShownAt = DateTime.now();
+    // 启动时窗口不显示，无需设置保护时刻；_lastShownAt 保持初始值（过去时刻），blur 不会误触发
     widget.settings.addListener(_onSettingsChanged);
     windowManager.addListener(this);
     _initTray();
