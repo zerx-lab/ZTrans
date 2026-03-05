@@ -36,7 +36,10 @@ pub struct TranslateChunk {
 
 /// Dart → Rust：Dart 端 UI 已就绪（所有 listener 已注册）
 #[derive(Deserialize, DartSignal)]
-pub struct AppReady {}
+pub struct AppReady {
+    /// 是否通过 XDG GlobalShortcuts portal 注册全局快捷键（弹出配置界面）
+    pub use_xdg_shortcuts: bool,
+}
 
 /// Rust → Dart：确认当前进程是主实例，Dart 可以显示窗口
 /// 委托实例不会发送此信号（会直接 process::exit）
@@ -48,6 +51,12 @@ pub struct InstanceReady {}
 pub struct ShortcutTriggered {
     /// "capture-region-translate" | "translate-clipboard"
     pub action: String,
+    /// translate-clipboard 动作触发时，在窗口聚焦前读取的鼠标选中文字（primary selection）
+    /// 若无选中文字则为空字符串
+    pub selected_text: String,
+    /// translate-clipboard 动作触发时，在窗口聚焦前读取的剪贴板文字
+    /// 若读取失败则为空字符串
+    pub clipboard_text: String,
 }
 
 /// Dart → Rust：执行截图 + OCR
@@ -64,27 +73,5 @@ pub struct CaptureAndTranslateRequest {
 pub struct ShortcutCaptureResult {
     pub text: String,
     pub error: String,
-    pub request_id: String,
-}
-
-/// Rust → Dart：全屏截图已就绪，Dart 应显示选区界面
-#[derive(Serialize, RustSignal)]
-pub struct ScreenCaptureReady {
-    pub request_id: String,
-    pub png_bytes: Vec<u8>,
-    pub error: String,
-}
-
-/// Dart → Rust：用户已框选区域，发送裁剪后的 PNG 进行 OCR
-#[derive(Deserialize, DartSignal)]
-pub struct ScreenRegionSelected {
-    pub request_id: String,
-    pub png_bytes: Vec<u8>,
-}
-
-/// Dart → Rust：用户取消了截图选区
-#[derive(Deserialize, DartSignal)]
-pub struct ScreenCaptureCancelled {
-    #[allow(dead_code)]
     pub request_id: String,
 }

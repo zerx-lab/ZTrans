@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData, LogicalKeyboardKey;
 import 'package:rinf/rinf.dart';
@@ -9,7 +8,6 @@ import '../../main.dart' show appCapturing;
 import '../bindings/bindings.dart';
 import '../settings/settings_provider.dart';
 import '../themes/app_themes.dart';
-import '../widgets/region_selector.dart';
 import '../widgets/title_bar.dart';
 
 const _languages = [
@@ -47,16 +45,10 @@ class _HomePageState extends State<HomePage> {
   StreamSubscription<RustSignalPack<ShortcutTriggered>>? _shortcutSubscription;
   StreamSubscription<RustSignalPack<ShortcutCaptureResult>>?
       _captureSubscription;
-  StreamSubscription<RustSignalPack<ScreenCaptureReady>>?
-      _screenCaptureSubscription;
   Timer? _debounce;
   int _counter = 0;
   String _lastRequestId = '';
   String _lastCaptureRequestId = '';
-
-  // 选区截图状态
-  Uint8List? _captureBytes;
-  bool _showRegionSelector = false;
 
   @override
   void initState() {
@@ -67,12 +59,12 @@ class _HomePageState extends State<HomePage> {
         ShortcutTriggered.rustSignalStream.listen(_onShortcutTriggered);
     _captureSubscription =
         ShortcutCaptureResult.rustSignalStream.listen(_onCaptureResult);
-    _screenCaptureSubscription =
-        ScreenCaptureReady.rustSignalStream.listen(_onScreenCaptureReady);
     _inputController.addListener(_onInputChanged);
     _loadInitialText();
-    // 通知 Rust 所有 listener 已注册，可以发送 initial_action
-    AppReady().sendSignalToRust();
+    // 通知 Rust 所有 listener 已注册，同时传递快捷键配置
+    AppReady(
+      useXdgShortcuts: widget.settings.useXdgShortcuts,
+    ).sendSignalToRust();
   }
 
   @override
@@ -81,7 +73,6 @@ class _HomePageState extends State<HomePage> {
     _chunkSubscription?.cancel();
     _shortcutSubscription?.cancel();
     _captureSubscription?.cancel();
-    _screenCaptureSubscription?.cancel();
     _debounce?.cancel();
     _inputController.dispose();
     _inputFocus.dispose();
@@ -93,8 +84,12 @@ class _HomePageState extends State<HomePage> {
     final action = pack.message.action;
 
     if (action == 'translate-clipboard') {
+      // Rust 端在窗口聚焦前已预先读取，直接使用，避免焦点转移后 primary selection 丢失
+      final selectedText = pack.message.selectedText.trim();
+      final clipboardText = pack.message.clipboardText.trim();
       await windowManager.show();
       await windowManager.focus();
+      await _applyTranslateText(selectedText, clipboardText);
     } else if (action == 'capture-region-translate') {
       // 标记截图中，阻止 onWindowBlur 自动隐藏
       appCapturing = true;
@@ -154,65 +149,6 @@ class _HomePageState extends State<HomePage> {
     _translate();
   }
 
-  /// Rust 全屏截图就绪 → 全屏显示选区界面
-  Future<void> _onScreenCaptureReady(
-      RustSignalPack<ScreenCaptureReady> pack) async {
-    final msg = pack.message;
-    if (msg.requestId != _lastCaptureRequestId) return;
-    if (!mounted) return;
-
-    if (msg.error.isNotEmpty) {
-      appCapturing = false;
-      setState(() {
-        _isLoading = false;
-        _errorText = msg.error;
-      });
-      await windowManager.show();
-      await windowManager.focus();
-      return;
-    }
-
-    // 全屏显示选区界面
-    await windowManager.show();
-    await windowManager.setFullScreen(true);
-    await windowManager.focus();
-
-    if (mounted) {
-      setState(() {
-        _captureBytes = Uint8List.fromList(msg.pngBytes);
-        _showRegionSelector = true;
-        _isLoading = false;
-      });
-    }
-  }
-
-  /// 用户框选完成 → 发送裁剪 PNG 给 Rust 做 OCR
-  Future<void> _onRegionSelected(Uint8List croppedPng) async {
-    setState(() {
-      _showRegionSelector = false;
-      _captureBytes = null;
-      _isLoading = true;
-    });
-    await windowManager.setFullScreen(false);
-
-    ScreenRegionSelected(
-      requestId: _lastCaptureRequestId,
-      pngBytes: croppedPng.toList(),
-    ).sendSignalToRust();
-  }
-
-  /// 用户取消截图选区
-  Future<void> _onCaptureCancelled() async {
-    setState(() {
-      _showRegionSelector = false;
-      _captureBytes = null;
-    });
-    await windowManager.setFullScreen(false);
-
-    // 告知 Rust 已取消；Rust 会回复 ShortcutCaptureResult(error="截图已取消")
-    ScreenCaptureCancelled(requestId: _lastCaptureRequestId).sendSignalToRust();
-  }
-
   Future<void> _loadInitialText() async {
     String text = '';
     try {
@@ -240,6 +176,26 @@ class _HomePageState extends State<HomePage> {
       _debounce = Timer(const Duration(milliseconds: 300), _translate);
     }
     _inputFocus.requestFocus();
+  }
+
+  /// 快捷键触发时将文字填入输入框并翻译。
+  /// 优先使用 [selectedText]（鼠标当前选中文字），若为空则回退到 [clipboardText]（剪贴板）。
+  /// 两者均由 Rust 端在窗口聚焦前预先读取，避免焦点转移后 primary selection 被清空。
+  Future<void> _applyTranslateText(
+      String selectedText, String clipboardText) async {
+    // 优先使用鼠标选中文字，无选中则回退到剪贴板
+    final text = selectedText.isNotEmpty ? selectedText : clipboardText;
+    if (!mounted) return;
+    _inputFocus.requestFocus();
+    if (text.isNotEmpty) {
+      _inputController.removeListener(_onInputChanged);
+      _inputController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection(baseOffset: 0, extentOffset: text.length),
+      );
+      _inputController.addListener(_onInputChanged);
+      _translate();
+    }
   }
 
   void _onInputChanged() {
@@ -333,41 +289,28 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
-    return Stack(
-      children: [
-        CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.escape): () {
-              windowManager.hide();
-            },
-          },
-          child: Scaffold(
-            backgroundColor: colors.surfaceContainerLowest,
-            body: Column(
-              children: [
-                TitleBar(onSettingsTap: _showSettings),
-                Container(height: 1, color: colors.outlineVariant),
-                _buildLanguageBar(colors),
-                Container(height: 1, color: colors.outlineVariant),
-                Expanded(child: _buildInputArea(colors)),
-                Container(height: 1, color: colors.outlineVariant),
-                Expanded(child: _buildResultArea(colors)),
-                Container(height: 1, color: colors.outlineVariant),
-                _buildStatusBar(colors),
-              ],
-            ),
-          ),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          windowManager.hide();
+        },
+      },
+      child: Scaffold(
+        backgroundColor: colors.surfaceContainerLowest,
+        body: Column(
+          children: [
+            TitleBar(onSettingsTap: _showSettings),
+            Container(height: 1, color: colors.outlineVariant),
+            _buildLanguageBar(colors),
+            Container(height: 1, color: colors.outlineVariant),
+            Expanded(child: _buildInputArea(colors)),
+            Container(height: 1, color: colors.outlineVariant),
+            Expanded(child: _buildResultArea(colors)),
+            Container(height: 1, color: colors.outlineVariant),
+            _buildStatusBar(colors),
+          ],
         ),
-        // 截图选区覆盖层（全屏时显示）
-        if (_showRegionSelector && _captureBytes != null)
-          Positioned.fill(
-            child: RegionSelector(
-              pngBytes: _captureBytes!,
-              onSelected: _onRegionSelected,
-              onCancelled: _onCaptureCancelled,
-            ),
-          ),
-      ],
+      ),
     );
   }
 
@@ -662,13 +605,37 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                         controller: _ocrModelCtrl,
                         onChanged: widget.settings.updateOcrModel,
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '快捷键在 KDE 系统设置 > 快捷键 > ZTrans 中配置',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: colors.onSurfaceVariant.withValues(alpha: 0.6),
-                        ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '使用 XDG portal 注册快捷键',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: colors.onSurface,
+                                  ),
+                                ),
+                                Text(
+                                  '启用后弹出系统快捷键配置界面\n禁用则通过系统设置自行绑定命令',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: colors.onSurfaceVariant
+                                        .withValues(alpha: 0.6),
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: widget.settings.useXdgShortcuts,
+                            onChanged: widget.settings.setUseXdgShortcuts,
+                          ),
+                        ],
                       ),
                     ],
                   ),

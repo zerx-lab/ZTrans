@@ -1,8 +1,7 @@
 use crate::signals::{
-    AppReady, CaptureAndTranslateRequest, ScreenCaptureCancelled, ScreenCaptureReady,
-    ScreenRegionSelected, ShortcutCaptureResult, ShortcutTriggered,
+    AppReady, CaptureAndTranslateRequest, ShortcutCaptureResult, ShortcutTriggered,
 };
-use base64::{engine::general_purpose, Engine};
+use base64::{Engine, engine::general_purpose};
 use futures_util::StreamExt;
 use reqwest::Client;
 use rinf::{DartSignal, RustSignal, debug_print};
@@ -18,50 +17,36 @@ pub async fn run_shortcut_service(client: Client, initial_action: Option<String>
     // 后台任务：Unix socket IPC 监听（接收来自新启动实例的命令）
     tokio::spawn(listen_ipc_socket());
 
-    // 后台任务：XDG GlobalShortcuts portal（应用运行时的全局快捷键）
-    tokio::spawn(listen_global_shortcuts());
+    // 等待 Dart 就绪信号，根据其配置决定是否注册 XDG 快捷键
+    let ready_rx = AppReady::get_dart_signal_receiver();
+    if let Some(pack) = ready_rx.recv().await
+        && pack.message.use_xdg_shortcuts
+    {
+        tokio::spawn(listen_global_shortcuts());
+    }
 
-    // 如果启动时携带了动作参数，等待 Dart 就绪握手后再触发
+    // 如果启动时携带了动作参数，发送快捷键触发信号
     if let Some(action) = initial_action {
-        let ready_rx = AppReady::get_dart_signal_receiver();
-        if ready_rx.recv().await.is_some() {
-            ShortcutTriggered { action }.send_signal_to_dart();
+        let (selected_text, clipboard_text) = if action == "translate-clipboard" {
+            read_selection_and_clipboard().await
+        } else {
+            (String::new(), String::new())
+        };
+        ShortcutTriggered {
+            action,
+            selected_text,
+            clipboard_text,
         }
+        .send_signal_to_dart();
     }
 
     // 主循环：处理来自 Dart 的截图请求
     let capture_rx = CaptureAndTranslateRequest::get_dart_signal_receiver();
-    let region_rx = ScreenRegionSelected::get_dart_signal_receiver();
-    let cancel_rx = ScreenCaptureCancelled::get_dart_signal_receiver();
-
-    // 用 channel 将选区结果/取消事件路由到正在等待的截图任务
-    let (region_tx, region_bcast_rx) =
-        tokio::sync::broadcast::channel::<Option<(String, Vec<u8>)>>(4);
-    let region_tx2 = region_tx.clone();
-
-    // 转发 ScreenRegionSelected → broadcast
-    tokio::spawn(async move {
-        while let Some(pack) = region_rx.recv().await {
-            let msg = pack.message;
-            let _ = region_tx.send(Some((msg.request_id, msg.png_bytes)));
-        }
-    });
-
-    // 转发 ScreenCaptureCancelled → broadcast（None 表示取消）
-    tokio::spawn(async move {
-        while let Some(pack) = cancel_rx.recv().await {
-            let _ = region_tx2.send(None);
-            drop(pack); // request_id 忽略，仅用于唤醒等待者
-        }
-    });
-
     while let Some(pack) = capture_rx.recv().await {
         let req = pack.message;
         let client = client.clone();
-        let mut rx = region_bcast_rx.resubscribe();
-        let req_id = req.request_id.clone();
         tokio::spawn(async move {
-            handle_capture(client, req, req_id, &mut rx).await;
+            handle_capture(client, req).await;
         });
     }
 }
@@ -85,7 +70,18 @@ async fn listen_ipc_socket() {
                 if stream.read_to_end(&mut buf).await.is_ok() {
                     let action = String::from_utf8_lossy(&buf).trim().to_string();
                     if !action.is_empty() {
-                        ShortcutTriggered { action }.send_signal_to_dart();
+                        // 在窗口聚焦前预先读取选中文字和剪贴板
+                        let (selected_text, clipboard_text) = if action == "translate-clipboard" {
+                            read_selection_and_clipboard().await
+                        } else {
+                            (String::new(), String::new())
+                        };
+                        ShortcutTriggered {
+                            action,
+                            selected_text,
+                            clipboard_text,
+                        }
+                        .send_signal_to_dart();
                     }
                 }
             }
@@ -105,7 +101,6 @@ async fn try_register_shortcuts() -> Result<(), BoxError> {
     use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
 
     let portal = GlobalShortcuts::new().await?;
-    // CreateSessionOptions 在私有模块，通过类型推断传入 Default
     let session = portal.create_session(Default::default()).await?;
 
     let shortcuts = [
@@ -114,20 +109,24 @@ async fn try_register_shortcuts() -> Result<(), BoxError> {
     ];
 
     portal
-        .bind_shortcuts(
-            &session,
-            &shortcuts,
-            None,
-            BindShortcutsOptions::default(),
-        )
+        .bind_shortcuts(&session, &shortcuts, None, BindShortcutsOptions::default())
         .await?;
 
     debug_print!("[shortcut] 全局快捷键注册成功");
 
     let mut stream = portal.receive_activated().await?;
     while let Some(activated) = stream.next().await {
+        let action = activated.shortcut_id().to_string();
+        // 在窗口聚焦前预先读取选中文字和剪贴板
+        let (selected_text, clipboard_text) = if action == "translate-clipboard" {
+            read_selection_and_clipboard().await
+        } else {
+            (String::new(), String::new())
+        };
         ShortcutTriggered {
-            action: activated.shortcut_id().to_string(),
+            action,
+            selected_text,
+            clipboard_text,
         }
         .send_signal_to_dart();
     }
@@ -135,15 +134,145 @@ async fn try_register_shortcuts() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn handle_capture(
-    client: Client,
-    req: CaptureAndTranslateRequest,
-    req_id: String,
-    region_rx: &mut tokio::sync::broadcast::Receiver<Option<(String, Vec<u8>)>>,
-) {
-    // Phase 1: 通过 XDG portal 截全屏，发送给 Dart 显示选区界面
-    let png_result = capture_full_screen().await;
-    match png_result {
+/// 读取 primary selection（鼠标当前选中文字）和普通剪贴板内容。
+/// 必须在窗口聚焦前调用，否则焦点转移可能清空 primary selection。
+/// 返回 (selected_text, clipboard_text)，任一读取失败则对应为空字符串。
+async fn read_selection_and_clipboard() -> (String, String) {
+    // primary selection：鼠标当前选中的文字
+    let selected_text = read_wl_paste(&["--primary", "--no-newline"]).await;
+    // 普通剪贴板
+    let clipboard_text = read_wl_paste(&["--no-newline"]).await;
+    (selected_text, clipboard_text)
+}
+
+/// 调用 wl-paste 并返回去除首尾空白后的文字，失败时返回空字符串。
+async fn read_wl_paste(args: &[&str]) -> String {
+    use tokio::process::Command;
+    match Command::new("wl-paste").args(args).output().await {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 使用 slurp 选区，然后截全屏并裁剪（适配 KDE Wayland）
+async fn capture_region_interactive() -> Result<Vec<u8>, BoxError> {
+    use tokio::process::Command;
+
+    // Step 1: slurp 获取用户框选的区域坐标
+    let slurp_out = Command::new("slurp")
+        .output()
+        .await
+        .map_err(|_| -> BoxError { "slurp 不可用，请安装 slurp".into() })?;
+
+    if !slurp_out.status.success() {
+        return Err("截图已取消".into());
+    }
+
+    let region = String::from_utf8_lossy(&slurp_out.stdout)
+        .trim()
+        .to_string();
+    if region.is_empty() {
+        return Err("截图已取消".into());
+    }
+
+    let (x, y, w, h) = parse_slurp_region(&region)?;
+
+    // Step 2: 优先用 grim 直接截选区（sway/wlroots 合成器）
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let tmp_path = std::env::temp_dir().join(format!("ztrans_{millis}.png"));
+
+    let grim_ok = Command::new("grim")
+        .args(["-g", &region])
+        .arg(&tmp_path)
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if grim_ok && tmp_path.exists() {
+        let bytes = tokio::fs::read(&tmp_path).await?;
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Ok(bytes);
+    }
+
+    // Step 3: grim 不可用（KDE Wayland 限制）→ XDG portal 截全屏 + Rust 裁剪
+    debug_print!("[capture] grim 不可用，回退到 XDG portal + 裁剪");
+    let full_png = capture_full_screen_portal().await?;
+    crop_png_bytes(&full_png, x, y, w, h)
+}
+
+/// 解析 slurp 输出 "X,Y WxH"（坐标可能含小数）
+fn parse_slurp_region(region: &str) -> Result<(u32, u32, u32, u32), BoxError> {
+    let (xy_part, wh_part) = region
+        .split_once(' ')
+        .ok_or_else(|| -> BoxError { format!("无法解析 slurp 输出: {region}").into() })?;
+    let (x_s, y_s) = xy_part
+        .split_once(',')
+        .ok_or_else(|| -> BoxError { format!("无法解析 slurp 坐标: {xy_part}").into() })?;
+    let (w_s, h_s) = wh_part
+        .split_once('x')
+        .ok_or_else(|| -> BoxError { format!("无法解析 slurp 尺寸: {wh_part}").into() })?;
+    Ok((
+        x_s.trim().parse::<f64>()? as u32,
+        y_s.trim().parse::<f64>()? as u32,
+        w_s.trim().parse::<f64>()? as u32,
+        h_s.trim().parse::<f64>()? as u32,
+    ))
+}
+
+/// 裁剪 PNG 字节到指定区域
+fn crop_png_bytes(
+    full_png: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, BoxError> {
+    use image::GenericImageView;
+    use std::io::Cursor;
+
+    let img = image::load_from_memory(full_png)?;
+    let (img_w, img_h) = img.dimensions();
+
+    // 防止裁剪超出图像边界
+    let x = x.min(img_w.saturating_sub(1));
+    let y = y.min(img_h.saturating_sub(1));
+    let width = width.min(img_w - x);
+    let height = height.min(img_h - y);
+
+    let cropped = img.crop_imm(x, y, width, height);
+    let mut out = Vec::new();
+    cropped.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)?;
+    Ok(out)
+}
+
+/// 通过 XDG Screenshot portal 截取全屏，返回 PNG 字节
+async fn capture_full_screen_portal() -> Result<Vec<u8>, BoxError> {
+    use ashpd::desktop::screenshot::Screenshot;
+
+    let response = Screenshot::request()
+        .interactive(false)
+        .send()
+        .await?
+        .response()?;
+
+    let uri_str = response.uri().to_string();
+    let path = std::path::PathBuf::from(
+        uri_str
+            .strip_prefix("file://")
+            .ok_or_else(|| -> BoxError { format!("截图 URI 格式无效: {uri_str}").into() })?,
+    );
+
+    let bytes = tokio::fs::read(&path).await?;
+    let _ = tokio::fs::remove_file(&path).await;
+    Ok(bytes)
+}
+
+async fn handle_capture(client: Client, req: CaptureAndTranslateRequest) {
+    let png_bytes = match capture_region_interactive().await {
         Err(e) => {
             ShortcutCaptureResult {
                 text: String::new(),
@@ -153,53 +282,18 @@ async fn handle_capture(
             .send_signal_to_dart();
             return;
         }
-        Ok(png_bytes) => {
-            ScreenCaptureReady {
-                request_id: req_id.clone(),
-                png_bytes,
-                error: String::new(),
-            }
-            .send_signal_to_dart();
-        }
-    }
-
-    // Phase 2: 等待 Dart 返回用户选择的区域（裁剪后的 PNG）
-    // 超时 60 秒，超时或取消则中止
-    let region_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        wait_for_region(region_rx, &req_id),
-    )
-    .await;
-
-    let cropped_png = match region_result {
-        Err(_) => {
-            // 超时
-            ShortcutCaptureResult {
-                text: String::new(),
-                error: "截图选区超时".to_string(),
-                request_id: req.request_id,
-            }
-            .send_signal_to_dart();
-            return;
-        }
-        Ok(None) => {
-            // 用户取消
-            ShortcutCaptureResult {
-                text: String::new(),
-                error: "截图已取消".to_string(),
-                request_id: req.request_id,
-            }
-            .send_signal_to_dart();
-            return;
-        }
-        Ok(Some(bytes)) => bytes,
+        Ok(bytes) => bytes,
     };
 
-    // Phase 3: OCR
-    let base64_image = general_purpose::STANDARD.encode(&cropped_png);
-    let ocr_result =
-        call_ocr_api(&client, &req.ocr_base_url, &req.ocr_api_key, &req.ocr_model, &base64_image)
-            .await;
+    let base64_image = general_purpose::STANDARD.encode(&png_bytes);
+    let ocr_result = call_ocr_api(
+        &client,
+        &req.ocr_base_url,
+        &req.ocr_api_key,
+        &req.ocr_model,
+        &base64_image,
+    )
+    .await;
 
     match ocr_result {
         Ok(text) => ShortcutCaptureResult {
@@ -215,47 +309,6 @@ async fn handle_capture(
         }
         .send_signal_to_dart(),
     }
-}
-
-/// 等待 broadcast 中属于本次请求的选区结果，忽略其他请求的消息
-async fn wait_for_region(
-    rx: &mut tokio::sync::broadcast::Receiver<Option<(String, Vec<u8>)>>,
-    req_id: &str,
-) -> Option<Vec<u8>> {
-    loop {
-        match rx.recv().await {
-            Ok(None) => return None, // 取消信号（不含 request_id）
-            Ok(Some((id, bytes))) if id == req_id => return Some(bytes),
-            Ok(Some(_)) => continue, // 其他请求的消息，忽略
-            Err(_) => return None,   // channel 关闭
-        }
-    }
-}
-
-/// 通过 XDG Screenshot portal 截取全屏，返回 PNG 字节
-async fn capture_full_screen() -> Result<Vec<u8>, BoxError> {
-    use ashpd::desktop::screenshot::Screenshot;
-
-    let response = Screenshot::request()
-        .interactive(false)
-        .send()
-        .await?
-        .response()?;
-
-    let uri = response.uri();
-    // portal 返回 file:// URI，转换为路径
-    // ashpd::Uri → file path（strip "file://" prefix）
-    let uri_str = uri.to_string();
-    let path = std::path::PathBuf::from(
-        uri_str
-            .strip_prefix("file://")
-            .ok_or_else(|| -> BoxError { format!("截图 URI 格式无效: {uri_str}").into() })?,
-    );
-
-    let bytes = tokio::fs::read(&path).await?;
-    // 删除 portal 生成的临时文件
-    let _ = tokio::fs::remove_file(&path).await;
-    Ok(bytes)
 }
 
 /// 调用 OpenAI 兼容 vision API 进行 OCR

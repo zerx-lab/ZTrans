@@ -26,6 +26,7 @@ urlencoding = "2.1"
 futures-util = "0.3"
 ashpd = { version = "0.13", features = ["global_shortcuts", "screenshot", "tokio"] }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Uncomment below to target the web.
 # tokio_with_wasm = { version = "0.8.5", features = ["rt", "macros", "time"] }

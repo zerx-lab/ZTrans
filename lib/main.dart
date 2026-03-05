@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:rinf/rinf.dart';
 import 'package:tray_manager/tray_manager.dart';
@@ -53,8 +55,7 @@ class _ZTransAppState extends State<ZTransApp>
     with WindowListener, TrayListener {
   /// 记录窗口最近一次变为可见的时刻，用于保护 onWindowBlur 不会在窗口刚显示后立刻隐藏它
   DateTime _lastShownAt = DateTime.fromMillisecondsSinceEpoch(0);
-
-  @override
+@override
   void initState() {
     super.initState();
     // 启动保护：初始化时立刻记录 show 时刻，防止 Wayland 焦点竞争导致窗口刚出现就被 blur 隐藏
@@ -73,17 +74,29 @@ class _ZTransAppState extends State<ZTransApp>
   }
 
   Future<void> _initTray() async {
+    trayManager.addListener(this);
+
     try {
-      trayManager.addListener(this);
       await trayManager.setIcon('assets/tray_icon.png');
+    } catch (e, st) {
+      debugPrint('[ZTrans] 托盘设置图标失败: $e\n$st');
+    }
+
+    // setToolTip 在 Linux 上未实现，单独捕获避免阻断后续步骤
+    try {
       await trayManager.setToolTip('ZTrans');
+    } catch (e) {
+      debugPrint('[ZTrans] 托盘设置 ToolTip 失败（Linux 不支持，已忽略）: $e');
+    }
+
+    try {
       await trayManager.setContextMenu(Menu(items: [
         MenuItem(key: 'show', label: '显示'),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: '退出'),
       ]));
     } catch (e, st) {
-      debugPrint('[ZTrans] 托盘初始化失败: $e\n$st');
+      debugPrint('[ZTrans] 托盘设置菜单失败: $e\n$st');
     }
   }
 
@@ -111,8 +124,7 @@ class _ZTransAppState extends State<ZTransApp>
       case 'show':
         windowManager.show().then((_) => windowManager.focus());
       case 'quit':
-        // 解除防关闭，然后关闭窗口，让 Rinf/进程正常退出
-        windowManager.setPreventClose(false).then((_) => windowManager.close());
+        exit(0);
     }
   }
 
@@ -132,7 +144,7 @@ class _ZTransAppState extends State<ZTransApp>
     windowManager.hide();
   }
 
-  /// 关闭按钮（TitleBar 已改为 windowManager.hide()，此处作为保险）
+  /// 关闭按钮 → 隐藏到托盘
   @override
   void onWindowClose() {
     windowManager.hide();

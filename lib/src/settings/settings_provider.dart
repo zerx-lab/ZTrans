@@ -13,6 +13,7 @@ class SettingsProvider extends ChangeNotifier {
   static const _openaiThinkingKey = 'openai_thinking';
   static const _openaiSystemPromptKey = 'openai_system_prompt';
   static const _ocrModelKey = 'ocr_model';
+  static const _useXdgShortcutsKey = 'use_xdg_shortcuts';
 
   AppThemeMode _themeMode = AppThemeMode.dark;
   TranslatorBackend _backend = TranslatorBackend.google;
@@ -22,6 +23,7 @@ class SettingsProvider extends ChangeNotifier {
   bool _openaiThinking = false;
   String _openaiSystemPrompt = '';
   String _ocrModel = 'PaddlePaddle/PaddleOCR-VL';
+  bool _useXdgShortcuts = false;
 
   AppThemeMode get themeMode => _themeMode;
   TranslatorBackend get backend => _backend;
@@ -31,6 +33,7 @@ class SettingsProvider extends ChangeNotifier {
   bool get openaiThinking => _openaiThinking;
   String get openaiSystemPrompt => _openaiSystemPrompt;
   String get ocrModel => _ocrModel;
+  bool get useXdgShortcuts => _useXdgShortcuts;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -56,6 +59,7 @@ class SettingsProvider extends ChangeNotifier {
     _openaiSystemPrompt = prefs.getString(_openaiSystemPromptKey) ?? '';
     _ocrModel =
         prefs.getString(_ocrModelKey) ?? 'PaddlePaddle/PaddleOCR-VL';
+    _useXdgShortcuts = prefs.getBool(_useXdgShortcutsKey) ?? false;
     notifyListeners();
   }
 
@@ -112,5 +116,13 @@ class SettingsProvider extends ChangeNotifier {
     _ocrModel = model;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_ocrModelKey, model);
+  }
+
+  Future<void> setUseXdgShortcuts(bool enabled) async {
+    if (_useXdgShortcuts == enabled) return;
+    _useXdgShortcuts = enabled;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_useXdgShortcutsKey, enabled);
   }
 }
