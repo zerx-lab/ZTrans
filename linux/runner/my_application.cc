@@ -17,7 +17,9 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 // ── First frame ──────────────────────────────────────────────────────────────
 
 static void first_frame_cb(MyApplication*, FlView* view) {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+  // 窗口显示由 Flutter 层的 windowManager.show() 控制，
+  // 此处不调用 gtk_widget_show，避免开机启动时强制弹出窗口。
+  (void)view;
 }
 
 // ── GApplication ──────────────────────────────────────────────────────────────

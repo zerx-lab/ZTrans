@@ -71,6 +71,7 @@ Comment=Desktop translation application
 Exec=$exec
 Icon=ztrans
 Terminal=false
+StartupNotify=false
 X-GNOME-Autostart-enabled=true
 ''';
   }
